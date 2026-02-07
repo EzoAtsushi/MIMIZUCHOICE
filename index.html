@@ -1,0 +1,1088 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>RUN</title>
+  <style>
+    :root{
+      --bg:#000;
+      --panel:#121212;
+      --panel2:#161616;
+      --line:#2a2a2a;
+      --txt:#eaeaea;
+      --muted:#bdbdbd;
+      --err:#ff5a5a;
+    }
+    html, body{
+      margin:0;
+      height:100%;
+      background:var(--bg);
+      color:var(--txt);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;
+    }
+
+    #app{height:100%; display:flex; flex-direction:column;}
+    #stage{flex:1; position:relative; background:#000;}
+    canvas{width:100%; height:100%; display:block; background:#000; touch-action:manipulation;}
+
+    #sheet{
+      padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+      background:var(--panel);
+      border-top:1px solid var(--line);
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+    }
+
+    .row{display:flex; gap:10px;}
+    .row > *{flex:1;}
+
+    button{
+      appearance:none;
+      border:2px solid #fff;
+      border-radius:14px;
+      background:#fff;
+      color:#000;
+      padding:14px 12px;
+      font-size:16px;
+      font-weight:700;
+      cursor:pointer;
+    }
+    button.secondary{
+      background:transparent;
+      color:#fff;
+      border-color:#fff;
+    }
+    button:active{transform: translateY(1px);}
+    button:disabled{opacity:0.55; cursor:not-allowed;}
+
+    .card{background:var(--panel2); border:1px solid var(--line); border-radius:16px; padding:12px;}
+    .title{font-size:14px; color:var(--muted); margin-bottom:8px;}
+    .kv{display:flex; justify-content:space-between; gap:10px; font-size:13px; color:var(--muted);}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:var(--txt); white-space:pre-wrap;}
+    input[type="range"]{width:100%;}
+    label{display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px;}
+
+    #overlay{
+      position:absolute;
+      inset:0;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      text-align:center;
+      padding:24px;
+      background:rgba(0,0,0,0.78);
+      color:#fff;
+      z-index:10;
+    }
+    #overlay .box{
+      max-width:560px;
+      width:100%;
+      background:rgba(20,20,20,0.92);
+      border:1px solid rgba(255,255,255,0.18);
+      border-radius:18px;
+      padding:16px;
+    }
+    #overlay .h{font-weight:800; margin-bottom:10px; font-size:16px;}
+    #overlay .msg{color:#ddd; font-size:13px; line-height:1.55; white-space:pre-wrap;}
+    #overlay .err{color:var(--err); font-weight:700; margin-top:10px; font-size:13px; white-space:pre-wrap;}
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="c"></canvas>
+    <div id="overlay">
+      <div class="box">
+        <div class="h">起動に失敗しました</div>
+        <div class="msg" id="ovMsg">読み込み中...</div>
+        <div class="err" id="ovErr"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="sheet">
+    <div class="card">
+      <div class="row">
+        <button id="btnStart" disabled>START</button>
+        <button id="btnReset" class="secondary" disabled>RESET</button>
+      </div>
+      <div style="height:10px"></div>
+      <div class="row">
+        <button id="btnFast" class="secondary" disabled>FAST x1</button>
+      </div>
+      <div style="height:10px"></div>
+      <div class="kv"><span>変化量</span><span class="mono" id="mutVal">0.26</span></div>
+      <input id="rngMut" type="range" min="0.10" max="0.60" step="0.02" value="0.26" />
+      <div style="height:8px"></div>
+      <label><input id="chkAutoNext" type="checkbox" checked /> AUTO NEXT (winner)</label>
+    </div>
+
+    <div class="card">
+      <div class="title">STATS</div>
+      <div class="mono" id="score">GEN: 0\nBEST: --</div>
+    </div>
+
+    <div class="card">
+      <div class="title">RULE</div>
+      <div class="mono">走りが良さそうな個体をタップ → 次のレースは「その個体＋変化した2体」で再スタート（繰り返して BEST を縮める）。</div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+(() => {
+  'use strict';
+
+  // 注意: 単一引用符('...')の中に生の改行を入れると、環境によって
+  // "Invalid or unexpected token" で落ちることがあります。改行は \n で書く。
+
+  // ===== Overlay helpers =====
+  const overlay = document.getElementById('overlay');
+  const ovMsg = document.getElementById('ovMsg');
+  const ovErr = document.getElementById('ovErr');
+  function showOverlay(msg, err){
+    overlay.style.display = 'flex';
+    ovMsg.textContent = msg || '';
+    ovErr.textContent = err || '';
+  }
+  function hideOverlay(){ overlay.style.display = 'none'; }
+
+  window.addEventListener('error', (e) => {
+    const msg = e && e.message ? String(e.message) : 'Unknown error';
+    const src = (e && e.filename)
+      ? `\n${e.filename}:${e.lineno||''}:${e.colno||''}`
+      : '';
+
+    if (msg === 'Script error.' || msg === 'Script error') {
+      showOverlay(
+        '外部スクリプトの実行でエラーが発生しました。\n(ネットワーク制限/CORSで詳細が見えないことがあります)',
+        msg + src
+      );
+    } else {
+      showOverlay('実行中エラーが発生しました。', msg + src);
+    }
+  });
+
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e && e.reason ? e.reason : e;
+    showOverlay('Promise のエラーが発生しました。', String(r && r.stack ? r.stack : r));
+  });
+
+  // ===== Planck loader (UMD優先) =====
+  function isPlanck(p){
+    return !!(
+      p &&
+      typeof p.World === 'function' &&
+      typeof p.Vec2 === 'function' &&
+      typeof p.Box === 'function' &&
+      typeof p.Edge === 'function' &&
+      typeof p.RevoluteJoint === 'function'
+    );
+  }
+
+  function loadUmd(url){
+    return new Promise((resolve, reject) => {
+      if (isPlanck(window.planck)) return resolve(window.planck);
+      try { delete window.planck; } catch (_) { window.planck = undefined; }
+
+      const s = document.createElement('script');
+      s.src = url;
+      s.async = true;
+      s.crossOrigin = 'anonymous';
+      s.onload = () => {
+        const p = window.planck;
+        if (!isPlanck(p)) return reject(new Error('UMD loaded, but planck global is invalid'));
+        resolve(p);
+      };
+      s.onerror = () => reject(new Error('Failed to load: ' + url));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function loadPlanck(){
+    const umdUrls = [
+      'https://cdnjs.cloudflare.com/ajax/libs/planck-js/1.4.2/planck.min.js',
+      'https://cdn.jsdelivr.net/npm/planck@1.3.0/dist/planck.min.js',
+      'https://unpkg.com/planck@1.3.0/dist/planck.min.js'
+    ];
+
+    let lastErr = null;
+    for (const u of umdUrls){
+      try { return await loadUmd(u); } catch (e){ lastErr = e; }
+    }
+    throw lastErr || new Error('Planck load failed');
+  }
+
+  // ===== Boot =====
+  (async () => {
+    try {
+      showOverlay('物理エンジン(Planck.js)を読み込み中...', '');
+      const planck = await loadPlanck();
+      startGame(planck);
+      hideOverlay();
+    } catch (e){
+      showOverlay(
+        'Planck.js の読み込みに失敗しました。\nこの環境で外部スクリプトがブロックされている可能性があります。',
+        String(e && e.message ? e.message : e)
+      );
+      console.error(e);
+    }
+  })();
+
+  // ===== Game =====
+  function startGame(pl){
+    const Vec2 = pl.Vec2;
+
+    // ===== Canvas =====
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    function resize(){
+      const dpr = Math.max(1, Math.min(2, devicePixelRatio || 1));
+      const r = canvas.getBoundingClientRect();
+      canvas.width = Math.floor(r.width * dpr);
+      canvas.height = Math.floor(r.height * dpr);
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+    addEventListener('resize', resize);
+    resize();
+
+    // ===== UI =====
+    const btnStart = document.getElementById('btnStart');
+    const btnReset = document.getElementById('btnReset');
+    const btnFast  = document.getElementById('btnFast');
+    const rngMut   = document.getElementById('rngMut');
+    const chkAutoNext = document.getElementById('chkAutoNext');
+    const mutVal   = document.getElementById('mutVal');
+    const scoreEl  = document.getElementById('score');
+
+    btnStart.disabled = false;
+    btnReset.disabled = false;
+    btnFast.disabled = false;
+
+    rngMut.oninput = () => { mutVal.textContent = `${Number(rngMut.value).toFixed(2)}`; };
+    rngMut.oninput();
+
+    // ===== Fast-forward =====
+    const SPEEDS = [1, 2, 4, 8];
+    let speedIdx = 0;
+    let speedMul = SPEEDS[speedIdx];
+    function updateFastLabel(){ btnFast.textContent = `FAST x${speedMul}`; }
+    updateFastLabel();
+    btnFast.onclick = () => {
+      speedIdx = (speedIdx + 1) % SPEEDS.length;
+      speedMul = SPEEDS[speedIdx];
+      updateFastLabel();
+    };
+
+    // ===== Helpers =====
+    function rand(a,b){ return a + Math.random()*(b-a); }
+    function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
+
+    // ===== World / Camera =====
+    const G = Vec2(0, -10);
+    const PPM = 34;
+    let cam = { cx: 0, cy: 3.2, zoom: 1.0 };
+
+    function worldToScreen(v){
+      const w = canvas.getBoundingClientRect().width;
+      const h = canvas.getBoundingClientRect().height;
+      const px = (v.x - cam.cx) * (PPM * cam.zoom) + w/2;
+      const py = h - ((v.y - cam.cy) * (PPM * cam.zoom) + h/2);
+      return {x:px, y:py};
+    }
+
+    function screenToCanvas(e){
+      const r = canvas.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    }
+
+    function fitCameraToBounds(xMin, xMax, yMin, yMax){
+      const w = canvas.getBoundingClientRect().width;
+      const h = canvas.getBoundingClientRect().height;
+      cam.cx = (xMin + xMax) / 2;
+      cam.cy = (yMin + yMax) / 2;
+
+      const worldW = Math.max(1e-3, xMax - xMin);
+      const worldH = Math.max(1e-3, yMax - yMin);
+
+      const zoomX = (w / (PPM * worldW)) * 0.92;
+      const zoomY = (h / (PPM * worldH)) * 0.92;
+      cam.zoom = Math.max(0.25, Math.min(1.8, Math.min(zoomX, zoomY)));
+    }
+
+    // ===== Game parameters =====
+    const laneY = [0.0, 3.2, 6.4];
+    const laneH = 2.8;
+    const xStart = -9.0;
+    const xGoal  =  10.0; // finish line
+    const GOAL_LINE_PX = 5;       // 赤線の太さ(px)
+    const GOAL_EPS_MIN = 0.01;    // 最低限の誤差吸収(ワールド単位)
+    function goalEpsWorld(){
+      // 見た目(線の太さ)に合わせて判定を少し手前に寄せる
+      // 0.55 は「半分より少し大きめ」の係数
+      return Math.max(GOAL_EPS_MIN, (GOAL_LINE_PX * 0.55) / (PPM * cam.zoom));
+    }
+    const xMin   = -12.0;
+    const xMax   =  13.0;
+
+    const MAX_RACE_TIME = Number.POSITIVE_INFINITY; // 制限時間なし
+
+    // 膠着判定
+    const STALL_EPS = 0.02;
+    const STALL_SEC = 50.0;
+
+    // ===== Runner (3 bodies, 2 joints) =====
+    function createRunner(world, startPos){
+      const hx = 0.48;
+      const hy = 0.14;
+      const gap = 0.02;
+      const dist = (2*hx + gap);
+
+      const y = startPos.y + 0.60;
+      const xTail = startPos.x;
+      const xMid  = startPos.x + dist;
+      const xHead = startPos.x + dist*2;
+
+      function segBody(x, friction){
+        const b = world.createBody({
+          type:'dynamic',
+          position: Vec2(x, y),
+          linearDamping: 0.10,
+          angularDamping: 1.0
+        });
+        b.createFixture(pl.Box(hx, hy), { density: 1.0, friction });
+        return b;
+      }
+
+      const tail = segBody(xTail, 1.40);
+      const mid  = segBody(xMid,  1.00);
+      const head = segBody(xHead, 0.70);
+
+      const anchor1 = Vec2(xTail + hx + gap/2, y);
+      const anchor2 = Vec2(xMid  + hx + gap/2, y);
+
+      const j1 = world.createJoint(pl.RevoluteJoint({
+        enableLimit: true,
+        lowerAngle: -1.2, upperAngle: 1.2,
+        enableMotor: true,
+        maxMotorTorque: 70,
+        motorSpeed: 0
+      }, tail, mid, anchor1));
+
+      const j2 = world.createJoint(pl.RevoluteJoint({
+        enableLimit: true,
+        lowerAngle: -1.2, upperAngle: 1.2,
+        enableMotor: true,
+        maxMotorTorque: 70,
+        motorSpeed: 0
+      }, mid, head, anchor2));
+
+      return {
+        main: mid,
+        joints: [j1, j2],
+        bodies: [tail, mid, head]
+      };
+    }
+
+    // ===== tip X (head vertices max) =====
+    function runnerMaxX(r){
+      const bodies = (r && r.bodies && r.bodies.length) ? r.bodies : [];
+      if (!bodies.length) return -Infinity;
+
+      let maxX = -Infinity;
+      const aabb = { lowerBound: Vec2(0,0), upperBound: Vec2(0,0) };
+
+      for (const body of bodies){
+        if (!body) continue;
+        for (let f = body.getFixtureList(); f; f = f.getNext()){
+          const sh = f.getShape();
+          const type = sh.getType();
+
+          if (type === 'polygon' && sh.m_vertices && sh.m_vertices.length){
+            const verts = sh.m_vertices;
+            for (let i=0;i<verts.length;i++){
+              const wp = body.getWorldPoint(verts[i]);
+              if (wp.x > maxX) maxX = wp.x;
+            }
+          } else {
+            sh.computeAABB(aabb, body.getTransform(), 0);
+            if (aabb.upperBound.x > maxX) maxX = aabb.upperBound.x;
+          }
+        }
+      }
+      return maxX;
+    }
+
+    function crossingTime(preX, postX, tStart, dt){
+      if (!(preX < xGoal && postX >= xGoal)) return null;
+      const denom = (postX - preX);
+      if (Math.abs(denom) < 1e-9) return tStart + dt;
+      const frac = clamp((xGoal - preX) / denom, 0, 1);
+      return tStart + frac * dt;
+    }
+
+    // ゴール判定: 先頭(=headの先端X)が赤線(xGoal)に触れた瞬間
+    // - postX がゴール未満なら未到達
+    // - preX が既にゴール以上なら、取りこぼし防止のため tStart を返す
+    // - それ以外は crossingTime で補間
+    function goalTime(preX, postX, tStart, dt){
+      const eps = goalEpsWorld();
+      const xTarget = xGoal - eps;
+
+      if (postX < xTarget) return null;
+      if (preX >= xTarget) return tStart;
+
+      const denom = (postX - preX);
+      if (Math.abs(denom) < 1e-9) return tStart + dt;
+      const frac = clamp((xTarget - preX) / denom, 0, 1);
+      return tStart + frac * dt;
+    }
+
+    // ===== Track =====
+    function buildLane(world, y0){
+      const floor = world.createBody({ type:'static' });
+      floor.createFixture(pl.Edge(Vec2(xMin, y0), Vec2(xMax, y0)), { friction: 0.98 });
+
+      const ceil = world.createBody({ type:'static' });
+      ceil.createFixture(pl.Edge(Vec2(xMin, y0 + laneH), Vec2(xMax, y0 + laneH)), { friction: 0.0 });
+
+      const lw = world.createBody({ type:'static' });
+      lw.createFixture(pl.Edge(Vec2(xMin, y0), Vec2(xMin, y0 + laneH)), { friction: 0.0 });
+
+      const rw = world.createBody({ type:'static' });
+      rw.createFixture(pl.Edge(Vec2(xMax, y0), Vec2(xMax, y0 + laneH)), { friction: 0.0 });
+
+      return {};
+    }
+
+    // ===== Genome =====
+    function cloneGenome(g){ return g.map(seg => seg.slice()); }
+
+    function randomGenome(cfg){
+      const out = [];
+      for (let s=0;s<cfg.segments;s++) out.push([ rand(-1.0, 1.0), rand(-1.0, 1.0) ]);
+      return out;
+    }
+
+    function mutateAround(base, cfg, mag){
+      const g = cloneGenome(base);
+      const rate = 0.26;
+      for (let s=0;s<cfg.segments;s++){
+        for (let j=0;j<2;j++){
+          if (Math.random() < rate) {
+            g[s][j] += rand(-mag, mag);
+            g[s][j] = clamp(g[s][j], -1.2, 1.2);
+          }
+        }
+      }
+      return g;
+    }
+
+    function segIndex(t, ctrl){
+      const n = Math.max(1, ctrl.segments|0);
+      const sd = Math.max(1e-4, Number(ctrl.segDur));
+      const k = Math.floor(t / sd);
+      return ((k % n) + n) % n;
+    }
+
+    function applyGenome(runner, genome, raceT, ctrl){
+      const seg = segIndex(raceT, ctrl);
+      const g = genome[seg];
+      for (let i=0;i<2;i++){
+        const j = runner.joints[i];
+        const target = g[i];
+        const ang = j.getJointAngle();
+        const spd = j.getJointSpeed();
+        let cmd = ctrl.kp * (target - ang) - ctrl.kd * spd;
+        if (cmd > ctrl.maxSpeed) cmd = ctrl.maxSpeed;
+        if (cmd < -ctrl.maxSpeed) cmd = -ctrl.maxSpeed;
+        j.setMotorSpeed(cmd);
+      }
+    }
+
+    // ===== Race state =====
+    const RaceState = { IDLE:'idle', RUNNING:'running', DONE:'done', TRANSITION:'transition' };
+    let state = RaceState.IDLE;
+
+    let world = null;
+    let runners = [];
+
+    let raceT = 0;
+    let gen = 0;
+    let bestTime = Infinity;
+
+    let winnerIndex = -1;
+    let seedIndex = 0;
+
+    const ctrl = { segments: 14, segDur: 0.55, kp: 7.0, kd: 1.10, maxSpeed: 8.0 };
+
+    let autoCountdown = 0;
+    const AUTO_DELAY = 1.25;
+
+    // 膠着
+    let stallBestX = -Infinity;
+    let stallTimer = 0;
+
+    // Debug
+    let raceReal = 0;
+    let simAcc = 0;
+    let stepsLastFrame = 0;
+    let dbgStepBestX = -Infinity;
+    let debugHud = false;
+    let lastBgTap = 0;
+
+    function formatTime(x){ return isFinite(x) ? `${x.toFixed(2)}s` : '--'; }
+
+    function showStats(){
+      const bestStr = isFinite(bestTime) ? formatTime(bestTime) : '--';
+      scoreEl.textContent = `GEN: ${gen}\nBEST: ${bestStr}`;
+    }
+
+    function resetAll(){
+      gen = 0;
+      bestTime = Infinity;
+      state = RaceState.IDLE;
+      world = null;
+      runners = [];
+      raceT = 0;
+      autoCountdown = 0;
+      winnerIndex = -1;
+      seedIndex = 0;
+      stallBestX = -Infinity;
+      stallTimer = 0;
+
+      raceReal = 0;
+      simAcc = 0;
+      stepsLastFrame = 0;
+      dbgStepBestX = -Infinity;
+      debugHud = false;
+      lastBgTap = 0;
+      showStats();
+    }
+
+    function buildRace(genomes, seedIdx=0){
+      world = pl.World(G);
+      laneY.forEach(y0 => buildLane(world, y0));
+
+      runners = [];
+      for (let i=0;i<3;i++){
+        const y0 = laneY[i];
+        const startPos = Vec2(xStart, y0);
+        const r = createRunner(world, startPos);
+        runners.push({
+          runner: r,
+          genome: genomes[i],
+          finished: false,
+          finishTime: null,
+          maxTipX: runnerMaxX(r)
+        });
+      }
+
+      fitCameraToBounds(xMin, xMax, laneY[0], laneY[2] + laneH);
+
+      raceT = 0;
+      autoCountdown = 0;
+      winnerIndex = -1;
+      seedIndex = seedIdx;
+      stallBestX = -Infinity;
+      stallTimer = 0;
+
+      raceReal = 0;
+      simAcc = 0;
+      stepsLastFrame = 0;
+      dbgStepBestX = -Infinity;
+
+      state = RaceState.RUNNING;
+    }
+
+    function computeWinnerIndex(){
+      // 1) ゴール済みがいれば最短タイム
+      let bestT = Infinity;
+      let biT = -1;
+      for (let i=0;i<3;i++){
+        const r = runners[i];
+        const ft = r.finishTime;
+        if (r.finished && typeof ft === 'number' && ft < bestT) { bestT = ft; biT = i; }
+      }
+      if (biT >= 0) return biT;
+
+      // 2) 全員未ゴールなら maxTipX
+      let bestX = -Infinity;
+      let biX = -1;
+      for (let i=0;i<3;i++){
+        const mx = runners[i].maxTipX;
+        if (typeof mx === 'number' && mx > bestX) { bestX = mx; biX = i; }
+      }
+      return biX;
+    }
+
+    function makeNextGen(baseGenome, selIndex, mag){
+      const genomes = [null, null, null];
+      genomes[selIndex] = cloneGenome(baseGenome);
+      const others = [0,1,2].filter(i => i !== selIndex);
+      genomes[others[0]] = mutateAround(baseGenome, ctrl, mag);
+      genomes[others[1]] = mutateAround(baseGenome, ctrl, mag);
+      return { genomes, seedIdx: selIndex };
+    }
+
+    function nextGenFromSelected(selIndex){
+      const mag = Number(rngMut.value);
+      const base = cloneGenome(runners[selIndex].genome);
+
+      const next = makeNextGen(base, selIndex, mag);
+      gen += 1;
+      buildRace(next.genomes, next.seedIdx);
+      showStats();
+    }
+
+    function startFirstRace(){
+      gen = 0;
+      const baseGenome = randomGenome(ctrl);
+      const mag = Number(rngMut.value);
+      const next = makeNextGen(baseGenome, 0, mag);
+      buildRace(next.genomes, next.seedIdx);
+      showStats();
+    }
+
+    function pickRunnerByTap(px, py){
+      if (!world || !runners || runners.length !== 3) return -1;
+      let best = Infinity;
+      let bi = -1;
+      for (let i=0;i<3;i++){
+        const p = worldToScreen(runners[i].runner.main.getPosition());
+        const dx = px - p.x, dy = py - p.y;
+        const d2 = dx*dx + dy*dy;
+        if (d2 < best) { best = d2; bi = i; }
+      }
+      const th = 58;
+      return (best <= th*th) ? bi : -1;
+    }
+
+    let transitionTimer = 0;
+    let selectedIndex = -1;
+
+    function selectNow(i){
+      if (i < 0 || i > 2) return;
+
+      selectedIndex = i;
+      state = RaceState.TRANSITION;
+      transitionTimer = 0;
+      autoCountdown = 0;
+
+      if (runners[i].finished && typeof runners[i].finishTime === 'number') {
+        bestTime = Math.min(bestTime, runners[i].finishTime);
+        showStats();
+      }
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+      if (state !== RaceState.RUNNING && state !== RaceState.DONE) return;
+      const p = screenToCanvas(e);
+      const i = pickRunnerByTap(p.x, p.y);
+      if (i >= 0) {
+        selectNow(i);
+      } else {
+        const t = performance.now();
+        if (t - lastBgTap < 320) {
+          debugHud = !debugHud;
+          lastBgTap = 0;
+        } else {
+          lastBgTap = t;
+        }
+      }
+    }, { passive:true });
+
+    btnStart.onclick = () => {
+      if (state === RaceState.RUNNING || state === RaceState.TRANSITION) return;
+      startFirstRace();
+    };
+
+    btnReset.onclick = () => resetAll();
+
+    // ===== Loop =====
+    let last = performance.now();
+    function frame(now){
+      const dtReal = Math.min(0.033, (now - last) / 1000);
+      last = now;
+
+      const W = canvas.getBoundingClientRect().width;
+      const H = canvas.getBoundingClientRect().height;
+      ctx.clearRect(0,0,W,H);
+
+      if (world && (state === RaceState.RUNNING || state === RaceState.TRANSITION || state === RaceState.DONE)) {
+        const simDt = 1/60;
+        const speed = (state === RaceState.RUNNING) ? speedMul : 1;
+
+        if (state === RaceState.RUNNING) raceReal += dtReal;
+
+        simAcc += dtReal * speed;
+        stepsLastFrame = 0;
+
+        while (simAcc >= simDt) {
+          stepsLastFrame++;
+          simAcc -= simDt;
+
+          if (state === RaceState.RUNNING) {
+            const tStart = raceT;
+            const preTipX = runners.map(r => runnerMaxX(r.runner));
+
+            raceT += simDt;
+            for (const r of runners) applyGenome(r.runner, r.genome, raceT, ctrl);
+            world.step(simDt);
+
+            const postTipX = [0,0,0];
+            for (let i=0;i<3;i++) postTipX[i] = runnerMaxX(runners[i].runner);
+
+            // ゴール判定(先頭=headの先端Xが赤線に触れた瞬間)
+            for (let i=0;i<3;i++){
+              const rr = runners[i];
+              if (rr.finished) continue;
+
+              const post = postTipX[i];
+              const pre  = preTipX[i];
+              const tHit = goalTime(pre, post, tStart, simDt);
+
+              if (tHit !== null) {
+                rr.finished = true;
+                rr.finishTime = tHit;
+              }
+            }
+
+            // maxTipX更新 + 膠着
+            let stepBestX = -Infinity;
+            for (let i=0;i<3;i++){
+              const rr = runners[i];
+              const tip = postTipX[i];
+              if (tip > rr.maxTipX) rr.maxTipX = tip;
+              if (rr.maxTipX > stepBestX) stepBestX = rr.maxTipX;
+            }
+            dbgStepBestX = stepBestX;
+
+            if (stepBestX > stallBestX + STALL_EPS) {
+              stallBestX = stepBestX;
+              stallTimer = 0;
+            } else {
+              stallTimer += simDt;
+            }
+
+            const someoneFinished = runners.some(r => r.finished);
+            const allFinished = runners.every(r => r.finished);
+            const stalledOut = (stallTimer >= STALL_SEC);
+
+            if (someoneFinished || allFinished || stalledOut || raceT >= MAX_RACE_TIME) {
+              const wi = computeWinnerIndex();
+              winnerIndex = wi;
+              if (wi >= 0 && runners[wi].finished && typeof runners[wi].finishTime === 'number') {
+                bestTime = Math.min(bestTime, runners[wi].finishTime);
+                showStats();
+              }
+              state = RaceState.DONE;
+              if (chkAutoNext.checked) autoCountdown = AUTO_DELAY;
+            }
+
+          } else if (state === RaceState.DONE) {
+            world.step(simDt);
+            if (autoCountdown > 0) {
+              autoCountdown -= simDt;
+              if (autoCountdown <= 0) {
+                autoCountdown = 0;
+                const wi = computeWinnerIndex();
+                if (wi >= 0) selectNow(wi);
+              }
+            }
+
+          } else if (state === RaceState.TRANSITION) {
+            transitionTimer += simDt;
+            for (const r of runners) applyGenome(r.runner, r.genome, raceT, ctrl);
+            world.step(simDt);
+            if (transitionTimer >= 0.75) {
+              const si = selectedIndex;
+              selectedIndex = -1;
+              nextGenFromSelected(si);
+            }
+          }
+        }
+
+        drawWorld();
+        drawGoals();
+        drawSelectionMarker();
+        drawSeedMarker();
+        drawWinnerMarker();
+        drawDebugHud();
+      } else {
+        drawIdleGuide(W,H);
+      }
+
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    // ===== Draw =====
+    function drawWorld(){
+      if (!world) return;
+      for (let b=world.getBodyList(); b; b=b.getNext()){
+        for (let f=b.getFixtureList(); f; f=f.getNext()){
+          const sh = f.getShape();
+
+          if (sh.getType() === 'edge') {
+            const v1 = b.getWorldPoint(sh.m_vertex1);
+            const v2 = b.getWorldPoint(sh.m_vertex2);
+            const p1 = worldToScreen(v1);
+            const p2 = worldToScreen(v2);
+            ctx.strokeStyle = 'rgba(255,255,255,0.70)';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.moveTo(p1.x,p1.y);
+            ctx.lineTo(p2.x,p2.y);
+            ctx.stroke();
+          }
+
+          if (sh.getType() === 'polygon') {
+            const verts = sh.m_vertices;
+            const by = b.getPosition().y;
+
+            let col;
+            if (by > laneY[2] - 0.2) col = 'rgba(0,255,0,0.88)';
+            else if (by > laneY[1] - 0.2) col = 'rgba(255,60,60,0.88)';
+            else col = 'rgba(80,140,255,0.88)';
+
+            ctx.fillStyle = col;
+            ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            for (let i=0;i<verts.length;i++){
+              const v = b.getWorldPoint(verts[i]);
+              const p = worldToScreen(v);
+              if (i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+          }
+        }
+      }
+    }
+
+    function drawGoals(){
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,70,70,0.95)';
+      ctx.lineWidth = GOAL_LINE_PX;
+      for (let i=0;i<3;i++){
+        const y0 = laneY[i];
+        const p1 = worldToScreen(Vec2(xGoal, y0));
+        const p2 = worldToScreen(Vec2(xGoal, y0 + laneH));
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawSelectionMarker(){
+      if (state !== RaceState.TRANSITION || selectedIndex < 0) return;
+      const p = worldToScreen(runners[selectedIndex].runner.main.getPosition());
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 26, 0, Math.PI*2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawSeedMarker(){
+      if (!world) return;
+      if (!(state === RaceState.RUNNING || state === RaceState.DONE)) return;
+      if (seedIndex < 0 || seedIndex > 2) return;
+      const p = worldToScreen(runners[seedIndex].runner.main.getPosition());
+      ctx.save();
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.beginPath();
+      ctx.moveTo(p.x,     p.y - 34);
+      ctx.lineTo(p.x + 9, p.y - 26);
+      ctx.lineTo(p.x,     p.y - 18);
+      ctx.lineTo(p.x - 9, p.y - 26);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawWinnerMarker(){
+      if (!world) return;
+      if (state !== RaceState.DONE) return;
+      if (winnerIndex < 0 || winnerIndex > 2) return;
+      const p = worldToScreen(runners[winnerIndex].runner.main.getPosition());
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(p.x - 18, p.y - 46);
+      ctx.lineTo(p.x - 10, p.y - 60);
+      ctx.lineTo(p.x,      p.y - 46);
+      ctx.lineTo(p.x + 10, p.y - 60);
+      ctx.lineTo(p.x + 18, p.y - 46);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 30, 0, Math.PI*2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawDebugHud(){
+      if (!debugHud || !world) return;
+      const x = 10, y = 10;
+      const w = 232;
+      const h = 112;
+
+      const fmt = (v, d=1) => (isFinite(v) ? v.toFixed(d) : '--');
+      const bestx = isFinite(dbgStepBestX) ? fmt(dbgStepBestX, 2) : '--';
+
+      const eps = goalEpsWorld();
+      const x0 = runners && runners[0] ? runnerMaxX(runners[0].runner) : NaN;
+      const x1 = runners && runners[1] ? runnerMaxX(runners[1].runner) : NaN;
+      const x2 = runners && runners[2] ? runnerMaxX(runners[2].runner) : NaN;
+
+      const lines = [
+        `FAST x${speedMul}`,
+        `REAL ${fmt(raceReal, 1)}s`,
+        `SIM  ${fmt(raceT, 1)}s`,
+        `GOAL ${xGoal.toFixed(2)} eps ${eps.toFixed(2)}`,
+        `X0 ${fmt(x0,2)}  X1 ${fmt(x1,2)}  X2 ${fmt(x2,2)}`,
+        `STALL ${fmt(stallTimer, 1)}/${STALL_SEC.toFixed(0)}s`,
+        `BESTX ${bestx}`,
+        `steps ${stepsLastFrame}`
+      ];
+
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+      ctx.fillStyle = '#fff';
+      ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+      let yy = y + 18;
+      for (const s of lines){
+        ctx.fillText(s, x + 10, yy);
+        yy += 16;
+      }
+      ctx.restore();
+    }
+
+    function drawIdleGuide(W,H){
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle = '#fff';
+      ctx.font = '18px system-ui, sans-serif';
+      ctx.fillText('START → TAP to select', 16, 36);
+      ctx.font = '13px system-ui, sans-serif';
+      ctx.globalAlpha = 0.92;
+      ctx.fillText('(double tap background: debug HUD)', 16, 60);
+      ctx.restore();
+    }
+
+    // ===== Tests =====
+    function selfTests(){
+      const requiredIds = ['c','btnStart','btnReset','btnFast','rngMut','chkAutoNext','mutVal','score','overlay','ovMsg','ovErr'];
+      for (const id of requiredIds) console.assert(document.getElementById(id), `Missing element #${id}`);
+      console.assert(typeof pl !== 'undefined', 'Planck object missing');
+      console.assert(typeof pl.World === 'function', 'Planck.World missing');
+      console.assert(typeof pl.Vec2 === 'function', 'Planck.Vec2 missing');
+      console.assert(typeof pl.RevoluteJoint === 'function', 'Planck.RevoluteJoint missing');
+      console.assert(MAX_RACE_TIME === Number.POSITIVE_INFINITY, 'MAX_RACE_TIME should be Infinity');
+      console.assert(STALL_SEC === 50.0, 'STALL_SEC should be 50.0');
+
+      const html = document.documentElement.outerHTML;
+      console.assert(!/\'[^\']*\n[^\']*\'/.test(html), 'Found raw newline inside single-quoted string');
+    }
+
+    function logicTests(){
+      const eq = (a,b) => JSON.stringify(a) === JSON.stringify(b);
+
+      function pickWinnerByResult(dummy){
+        let bestT = Infinity, biT = -1;
+        for (let i=0;i<dummy.length;i++){
+          const r = dummy[i];
+          if (r.finished && typeof r.finishTime === 'number' && r.finishTime < bestT) { bestT = r.finishTime; biT = i; }
+        }
+        if (biT >= 0) return biT;
+        let bestX = -Infinity, biX = -1;
+        for (let i=0;i<dummy.length;i++){
+          const mx = dummy[i].maxTipX;
+          if (typeof mx === 'number' && mx > bestX) { bestX = mx; biX = i; }
+        }
+        return biX;
+      }
+
+      console.assert(btnFast && btnFast.textContent.includes('FAST'), 'FAST button missing or unlabeled');
+      console.assert(btnFast.textContent.includes('x1'), 'FAST label should start with x1');
+      console.assert(typeof speedMul === 'number' && speedMul === 1, 'speedMul should default to 1');
+      console.assert(typeof simAcc === 'number' && simAcc === 0, 'simAcc should init to 0');
+      console.assert(typeof raceReal === 'number', 'raceReal should be number');
+
+      const base = randomGenome(ctrl);
+      for (let sel=0; sel<3; sel++){
+        const out = makeNextGen(base, sel, 0.30);
+        console.assert(out.seedIdx === sel, 'seedIdx should equal selIndex');
+        console.assert(eq(out.genomes[sel], base), 'parent genome should stay unmutated on selected lane');
+        console.assert(out.genomes.length === 3, 'genomes should be 3');
+      }
+
+      console.assert(pickWinnerByResult([
+        {finished:false, finishTime:null, maxTipX: 2},
+        {finished:false, finishTime:null, maxTipX: 5},
+        {finished:false, finishTime:null, maxTipX: 4},
+      ]) === 1, 'Winner should be maxTipX when none finished');
+
+      console.assert(pickWinnerByResult([
+        {finished:false, finishTime:null, maxTipX: 9},
+        {finished:true,  finishTime: 3.2, maxTipX: 6},
+        {finished:true,  finishTime: 3.5, maxTipX: 8},
+      ]) === 1, 'Winner should be shortest finishTime when finished exists');
+
+      const t = crossingTime(9.90, 10.10, 1.0, 0.5);
+      console.assert(t !== null && t >= 1.0 && t <= 1.5, 'crossingTime should interpolate within step');
+      console.assert(crossingTime(10.0, 10.1, 1.0, 0.5) === null, 'crossingTime should require pre < goal');
+
+      const g1 = goalTime(9.90, 10.10, 1.0, 0.5);
+      console.assert(g1 !== null && g1 >= 1.0 && g1 <= 1.5, 'goalTime should detect touch/cross');
+      const g2 = goalTime(10.0, 10.1, 1.0, 0.5);
+      console.assert(g2 === 1.0, 'goalTime should return tStart when already at/over goal');
+      console.assert(goalTime(9.0, 9.5, 1.0, 0.5) === null, 'goalTime should be null if not reached');
+
+      const w = pl.World(G);
+      const b = w.createBody({type:'dynamic', position: Vec2(0,1)});
+      b.createFixture(pl.Box(0.2,0.2), {density:1});
+      w.step(1/60);
+      console.assert(isFinite(b.getPosition().y), 'Body position should be finite after step');
+
+      const w2 = pl.World(G);
+      const head = w2.createBody({type:'dynamic', position: Vec2(0,0)});
+      const hx = 1.0, hy = 0.2;
+      head.createFixture(pl.Box(hx, hy), {density:1});
+      const dummy = { bodies:[null,null,head] };
+      const x0 = runnerMaxX(dummy);
+      console.assert(Math.abs(x0 - hx) < 1e-6, 'TipX should equal +hx when angle=0');
+      head.setAngle(Math.PI/2);
+      const x1 = runnerMaxX(dummy);
+      console.assert(x1 < 0.5, 'TipX should shrink when rotated 90deg');
+
+      const safe = 'a\\n' + 'b';
+      console.assert(safe.includes('\\n'), 'Newline escape should exist');
+    }
+
+    selfTests();
+    logicTests();
+    resetAll();
+  }
+
+})();
+</script>
+</body>
+</html>
