@@ -1,5 +1,5 @@
 /* MIMIZU CHOICE - Service Worker */
-const CACHE_NAME = 'mimizu-choice-v1';
+const CACHE_NAME = 'mimizu-choice-v2';
 
 const CORE_ASSETS = [
   './',

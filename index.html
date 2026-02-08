@@ -70,6 +70,19 @@
     .kv{display:flex; justify-content:space-between; gap:10px; font-size:13px; color:var(--muted);}
     .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color:var(--txt); white-space:pre-wrap;}
     input[type="range"]{width:100%;}
+    input[type="text"], textarea{
+      width:100%;
+      box-sizing:border-box;
+      padding:10px 10px;
+      border-radius:12px;
+      border:1px solid var(--line);
+      background:#0b0b0b;
+      color:var(--txt);
+      font-size:13px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    textarea{resize:none; line-height:1.4;}
+
     label{display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px;}
 
     #overlay{
@@ -142,6 +155,23 @@
     <div class="card">
       <div class="mono" id="score">TIME: 0.00s\nGEN: 0\nBEST: --</div>
     </div>
+
+    <div class="card">
+      <div class="kv"><span>PASSWORD</span><span class="mono" id="pwLabel">BEST</span></div>
+      <textarea id="pwOut" rows="2" readonly>--</textarea>
+      <div style="height:8px"></div>
+      <div class="row">
+        <button id="btnCopyPw" class="secondary" disabled>COPY</button>
+      </div>
+      <div style="height:10px"></div>
+      <input id="pwIn" type="text" placeholder="パスワードを貼り付け" />
+      <div class="row" style="margin-top:8px">
+        <button id="btnLoadPw" class="secondary">LOAD</button>
+        <button id="btnClearPw" class="secondary">CLEAR</button>
+      </div>
+      <div class="mono" id="pwMsg" style="margin-top:8px; color:var(--muted)"></div>
+    </div>
+
 
     <div class="card">
       <div class="title">RULE</div>
@@ -245,6 +275,14 @@ function isPlanck(p){
     const chkAutoNext = document.getElementById('chkAutoNext');
     const mutVal   = document.getElementById('mutVal');
     const scoreEl  = document.getElementById('score');
+    const pwOut    = document.getElementById('pwOut');
+    const pwIn     = document.getElementById('pwIn');
+    const pwMsg    = document.getElementById('pwMsg');
+    const pwLabel  = document.getElementById('pwLabel');
+    const btnCopyPw = document.getElementById('btnCopyPw');
+    const btnLoadPw = document.getElementById('btnLoadPw');
+    const btnClearPw = document.getElementById('btnClearPw');
+
 
     btnStart.disabled = false;
     btnReset.disabled = false;
@@ -275,6 +313,146 @@ btnFast.onclick = () => {
 // ===== Helpers =====
     function rand(a,b){ return a + Math.random()*(b-a); }
     function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
+
+    // ===== Password (DQ-ish) =====
+    // 最速(BEST)の個体(genome)を、短い文字列(パスワード)にしてコピー/復元できるようにする
+    const PW_VERSION = 1;
+    const PW_MIN = -1.2;
+    const PW_RANGE = 2.4;
+    const PW_QMAX = 4095; // 12-bit
+
+    function b64urlEncode(bytes){
+      let bin = '';
+      for (let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+    }
+
+    function b64urlDecode(str){
+      let s = String(str || '').replace(/-/g,'+').replace(/_/g,'/');
+      while (s.length % 4) s += '=';
+      const bin = atob(s);
+      const out = new Uint8Array(bin.length);
+      for (let i=0;i<bin.length;i++) out[i] = bin.charCodeAt(i) & 255;
+      return out;
+    }
+
+    function crc16ccitt(bytes){
+      let crc = 0xFFFF;
+      for (let i=0;i<bytes.length;i++){
+        crc ^= (bytes[i] << 8);
+        for (let b=0;b<8;b++){
+          crc = (crc & 0x8000) ? (((crc << 1) ^ 0x1021) & 0xFFFF) : ((crc << 1) & 0xFFFF);
+        }
+      }
+      return crc & 0xFFFF;
+    }
+
+    function formatPw(s){
+      // ドラクエ風: 4文字ごとにスペース
+      return String(s || '').replace(/\s+/g,'').replace(/(.{4})/g,'$1 ').trim();
+    }
+
+    function normalizePw(s){
+      return String(s || '').trim().replace(/\s+/g,'');
+    }
+
+    function qFromVal(x){
+      const t = (clamp(x, PW_MIN, PW_MIN + PW_RANGE) - PW_MIN) / PW_RANGE; // 0..1
+      return clamp(Math.round(t * PW_QMAX), 0, PW_QMAX) | 0;
+    }
+
+    function valFromQ(q){
+      const t = clamp(q, 0, PW_QMAX) / PW_QMAX;
+      return PW_MIN + (t * PW_RANGE);
+    }
+
+    function pack12(values){
+      const nBits = values.length * 12;
+      const out = new Uint8Array(Math.ceil(nBits / 8));
+      let bitPos = 0;
+      for (let k=0;k<values.length;k++){
+        const v = values[k] & 0xFFF;
+        for (let i=11;i>=0;i--){
+          const bit = (v >> i) & 1;
+          const byteIndex = bitPos >> 3;
+          const bitIndex = 7 - (bitPos & 7);
+          out[byteIndex] |= (bit << bitIndex);
+          bitPos++;
+        }
+      }
+      return out;
+    }
+
+    function unpack12(bytes, count){
+      const out = new Array(count);
+      let bitPos = 0;
+      for (let k=0;k<count;k++){
+        let v = 0;
+        for (let i=0;i<12;i++){
+          const byteIndex = bitPos >> 3;
+          const bitIndex = 7 - (bitPos & 7);
+          const bit = (bytes[byteIndex] >> bitIndex) & 1;
+          v = (v << 1) | bit;
+          bitPos++;
+        }
+        out[k] = v;
+      }
+      return out;
+    }
+
+    function encodeGenome(genome){
+      const segs = genome.length | 0;
+      if (!Array.isArray(genome) || segs <= 0) throw new Error('invalid genome');
+
+      const vals = [];
+      for (let s=0;s<segs;s++){
+        vals.push(qFromVal(genome[s][0]));
+        vals.push(qFromVal(genome[s][1]));
+      }
+
+      const packed = pack12(vals);
+      const payload = new Uint8Array(2 + packed.length);
+      payload[0] = PW_VERSION;
+      payload[1] = segs;
+      payload.set(packed, 2);
+
+      const crc = crc16ccitt(payload);
+      const full = new Uint8Array(payload.length + 2);
+      full.set(payload, 0);
+      full[full.length - 2] = (crc >> 8) & 255;
+      full[full.length - 1] = crc & 255;
+
+      return formatPw(b64urlEncode(full));
+    }
+
+    function decodeGenome(pw){
+      const raw = b64urlDecode(normalizePw(pw));
+      if (raw.length < 6) throw new Error('too short');
+
+      const payload = raw.slice(0, raw.length - 2);
+      const c0 = raw[raw.length - 2];
+      const c1 = raw[raw.length - 1];
+      const crcGiven = (c0 << 8) | c1;
+      const crcCalc = crc16ccitt(payload);
+      if (crcGiven !== crcCalc) throw new Error('checksum mismatch');
+
+      const ver = payload[0] | 0;
+      const segs = payload[1] | 0;
+      if (ver !== PW_VERSION) throw new Error('version mismatch');
+      if (segs <= 0 || segs > 64) throw new Error('bad segments');
+
+      const packed = payload.slice(2);
+      const need = segs * 2;
+      const qs = unpack12(packed, need);
+
+      const genome = [];
+      for (let s=0;s<segs;s++){
+        const a = valFromQ(qs[s*2+0]);
+        const b = valFromQ(qs[s*2+1]);
+        genome.push([a,b]);
+      }
+      return genome;
+    }
 
     // ===== World / Camera =====
     const G = Vec2(0, -10);
@@ -509,6 +687,9 @@ btnFast.onclick = () => {
     let gen = 0;
     let bestTime = Infinity;
 
+    let bestGenome = null; // fastest genome so far
+    let seedGenomeOverride = null; // loaded password genome (used as start seed)
+
     let winnerIndex = -1;
     let seedIndex = 0;
 
@@ -539,9 +720,98 @@ btnFast.onclick = () => {
       scoreEl.textContent = `TIME: ${timeStr}\nGEN: ${gen}\nBEST: ${bestStr}`;
     }
 
+    // ===== Password UI =====
+    function setPwMsg(msg, isErr=false){
+      if (!pwMsg) return;
+      pwMsg.style.color = isErr ? 'var(--err)' : 'var(--muted)';
+      pwMsg.textContent = msg || '';
+    }
+
+    function maybeUpdateBest(genome, t){
+      if (typeof t !== 'number' || !isFinite(t)) return false;
+      if (!isFinite(bestTime) || t < bestTime) {
+        bestTime = t;
+        bestGenome = cloneGenome(genome);
+        return true;
+      }
+      return false;
+    }
+
+    function refreshPasswordUI(){
+      if (!pwOut || !btnCopyPw) return;
+
+      if (bestGenome && Array.isArray(bestGenome) && bestGenome.length) {
+        pwOut.value = encodeGenome(bestGenome);
+        btnCopyPw.disabled = false;
+        if (pwLabel) pwLabel.textContent = 'BEST';
+        setPwMsg('BEST のパスワード（COPYで保存）');
+      } else {
+        pwOut.value = '--';
+        btnCopyPw.disabled = true;
+        if (pwLabel) pwLabel.textContent = 'BEST';
+        setPwMsg('まだBESTがありません（ゴール到達で生成）');
+      }
+    }
+
+    function initPasswordUI(){
+      if (!pwOut || !pwIn || !btnCopyPw || !btnLoadPw || !btnClearPw) return;
+
+      refreshPasswordUI();
+
+      btnCopyPw.addEventListener('click', async () => {
+        const text = (pwOut.value || '').trim();
+        if (!text || text === '--') return;
+
+        // Clipboard API (httpsページ or PWAで動作しやすい)
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            setPwMsg('コピーしました。');
+            return;
+          }
+        } catch (_) {}
+
+        // fallback: selection
+        try {
+          pwOut.focus();
+          pwOut.select();
+          const ok = document.execCommand && document.execCommand('copy');
+          setPwMsg(ok ? 'コピーしました。' : 'コピーできませんでした（手動で選択→コピーしてください）', !ok);
+        } catch (e) {
+          setPwMsg('コピーできませんでした（手動で選択→コピーしてください）', true);
+        }
+      });
+
+      btnLoadPw.addEventListener('click', () => {
+        const text = (pwIn.value || '').trim();
+        if (!text) {
+          setPwMsg('パスワードを貼り付けてください。', true);
+          return;
+        }
+        try {
+          const g = decodeGenome(text);
+          if (!g || !Array.isArray(g) || g.length !== ctrl.segments) {
+            throw new Error('segments mismatch');
+          }
+          seedGenomeOverride = cloneGenome(g);
+          setPwMsg('ロードしました。次にSTARTするとこの個体から始めます。');
+        } catch (e) {
+          setPwMsg('パスワードが不正です（' + String(e && e.message ? e.message : e) + '）', true);
+        }
+      });
+
+      btnClearPw.addEventListener('click', () => {
+        pwIn.value = '';
+        setPwMsg('');
+      });
+    }
+
+
     function resetAll(){
       gen = 0;
       bestTime = Infinity;
+      bestGenome = null;
+      seedGenomeOverride = null;
       state = RaceState.IDLE;
       world = null;
       runners = [];
@@ -559,6 +829,7 @@ btnFast.onclick = () => {
       debugHud = false;
       lastBgTap = 0;
       showStats();
+      refreshPasswordUI();
     }
 
     function buildRace(genomes, seedIdx=0){
@@ -638,7 +909,9 @@ btnFast.onclick = () => {
 
     function startFirstRace(){
       gen = 0;
-      const baseGenome = randomGenome(ctrl);
+      const baseGenome = (seedGenomeOverride && Array.isArray(seedGenomeOverride) && seedGenomeOverride.length === ctrl.segments)
+        ? cloneGenome(seedGenomeOverride)
+        : randomGenome(ctrl);
       const mag = Number(rngMut.value);
       const next = makeNextGen(baseGenome, 0, mag);
       buildRace(next.genomes, next.seedIdx);
@@ -671,8 +944,9 @@ btnFast.onclick = () => {
       autoCountdown = 0;
 
       if (runners[i].finished && typeof runners[i].finishTime === 'number') {
-        bestTime = Math.min(bestTime, runners[i].finishTime);
+        maybeUpdateBest(runners[i].genome, runners[i].finishTime);
         showStats();
+        refreshPasswordUI();
       }
     }
 
@@ -776,8 +1050,9 @@ btnFast.onclick = () => {
               const wi = computeWinnerIndex();
               winnerIndex = wi;
               if (wi >= 0 && runners[wi].finished && typeof runners[wi].finishTime === 'number') {
-                bestTime = Math.min(bestTime, runners[wi].finishTime);
+                maybeUpdateBest(runners[wi].genome, runners[wi].finishTime);
                 showStats();
+                refreshPasswordUI();
               }
               state = RaceState.DONE;
               if (chkAutoNext.checked) autoCountdown = AUTO_DELAY;
@@ -993,7 +1268,7 @@ btnFast.onclick = () => {
 
     // ===== Tests =====
     function selfTests(){
-      const requiredIds = ['c','btnStart','btnReset','btnFast','rngMut','chkAutoNext','mutVal','score','overlay','ovMsg','ovErr'];
+      const requiredIds = ['c','btnStart','btnReset','btnFast','rngMut','chkAutoNext','mutVal','score','overlay','ovMsg','ovErr','pwOut','pwIn','pwMsg','pwLabel','btnCopyPw','btnLoadPw','btnClearPw'];
       for (const id of requiredIds) console.assert(document.getElementById(id), `Missing element #${id}`);
       console.assert(typeof pl !== 'undefined', 'Planck object missing');
       console.assert(typeof pl.World === 'function', 'Planck.World missing');
@@ -1083,6 +1358,7 @@ btnFast.onclick = () => {
 
     selfTests();
     logicTests();
+    initPasswordUI();
     resetAll();
   }
 
