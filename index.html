@@ -87,10 +87,22 @@
     #overlay .h{font-weight:800; margin-bottom:10px; font-size:16px;}
     #overlay .msg{color:#ddd; font-size:13px; line-height:1.55; white-space:pre-wrap;}
     #overlay .err{color:var(--err); font-weight:700; margin-top:10px; font-size:13px; white-space:pre-wrap;}
+  
+    #topbar{
+      padding: 10px 12px;
+      background:#000;
+      color:#fff;
+      font-weight:900;
+      letter-spacing:0.08em;
+      text-align:center;
+      border-bottom:1px solid var(--line);
+      user-select:none;
+    }
   </style>
 </head>
 <body>
 <div id="app">
+  <div id="topbar">MIMIZU CHOICE</div>
   <div id="stage">
     <canvas id="c"></canvas>
     <div id="overlay">
@@ -125,7 +137,9 @@
 
     <div class="card">
       <div class="title">RULE</div>
-      <div class="mono">走りが良さそうな個体をタップ → 次のレースは「その個体＋変化した2体」で再スタート（繰り返して BEST を縮める）。</div>
+      <div class="mono">走りが良さそうな個体をタップ → 次のレースは「その個体＋変化した2体」で再スタート（繰り返して BEST を縮める）。
+
+膠着（こうちゃく）：しばらく前に進まない状態が続いたら、そのレースは終了します（目安：50秒）。 ゴールしていなくても「一番前に進んだ個体」が勝ち扱いになります。AUTO NEXT がONなら、その勝ち個体が自動で選ばれます。</div>
     </div>
   </div>
 </div>
