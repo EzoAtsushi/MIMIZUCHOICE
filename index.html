@@ -131,7 +131,9 @@
   </div>
 </div>
 
-<script type="module">
+<script src="./planck.min.js"></script>
+
+<script>
 (() => {
   'use strict';
 
@@ -170,68 +172,33 @@
     showOverlay('Promise のエラーが発生しました。', String(r && r.stack ? r.stack : r));
   });
 
-  // ===== Planck loader (UMD優先) =====
-  function isPlanck(p){
-    return !!(
-      p &&
-      typeof p.World === 'function' &&
-      typeof p.Vec2 === 'function' &&
-      typeof p.Box === 'function' &&
-      typeof p.Edge === 'function' &&
-      typeof p.RevoluteJoint === 'function'
+  // ===== Planck check (local ./planck.min.js) =====
+function isPlanck(p){
+  return !!(
+    p &&
+    typeof p.World === 'function' &&
+    typeof p.Vec2 === 'function' &&
+    typeof p.Box === 'function' &&
+    typeof p.Edge === 'function' &&
+    typeof p.RevoluteJoint === 'function'
+  );
+}
+
+// ===== Boot =====
+(() => {
+  const planck = window.planck;
+  if (!isPlanck(planck)) {
+    showOverlay(
+      'planck.min.js が読み込めません。\n\n・index.html と同じフォルダに planck.min.js を置いてください。\n・GitHub Pages の場合は同じ階層にアップロードしてコミットしてください。',
+      ''
     );
+    return;
   }
+  startGame(planck);
+  hideOverlay();
+})();
 
-  function loadUmd(url){
-    return new Promise((resolve, reject) => {
-      if (isPlanck(window.planck)) return resolve(window.planck);
-      try { delete window.planck; } catch (_) { window.planck = undefined; }
-
-      const s = document.createElement('script');
-      s.src = url;
-      s.async = true;
-      s.crossOrigin = 'anonymous';
-      s.onload = () => {
-        const p = window.planck;
-        if (!isPlanck(p)) return reject(new Error('UMD loaded, but planck global is invalid'));
-        resolve(p);
-      };
-      s.onerror = () => reject(new Error('Failed to load: ' + url));
-      document.head.appendChild(s);
-    });
-  }
-
-  async function loadPlanck(){
-    const umdUrls = [
-      'https://cdnjs.cloudflare.com/ajax/libs/planck-js/1.4.2/planck.min.js',
-      'https://cdn.jsdelivr.net/npm/planck@1.3.0/dist/planck.min.js',
-      'https://unpkg.com/planck@1.3.0/dist/planck.min.js'
-    ];
-
-    let lastErr = null;
-    for (const u of umdUrls){
-      try { return await loadUmd(u); } catch (e){ lastErr = e; }
-    }
-    throw lastErr || new Error('Planck load failed');
-  }
-
-  // ===== Boot =====
-  (async () => {
-    try {
-      showOverlay('物理エンジン(Planck.js)を読み込み中...', '');
-      const planck = await loadPlanck();
-      startGame(planck);
-      hideOverlay();
-    } catch (e){
-      showOverlay(
-        'Planck.js の読み込みに失敗しました。\nこの環境で外部スクリプトがブロックされている可能性があります。',
-        String(e && e.message ? e.message : e)
-      );
-      console.error(e);
-    }
-  })();
-
-  // ===== Game =====
+// ===== Game =====
   function startGame(pl){
     const Vec2 = pl.Vec2;
 
@@ -266,18 +233,25 @@
     rngMut.oninput();
 
     // ===== Fast-forward =====
-    const SPEEDS = [1, 2, 4, 8];
-    let speedIdx = 0;
-    let speedMul = SPEEDS[speedIdx];
-    function updateFastLabel(){ btnFast.textContent = `FAST x${speedMul}`; }
-    updateFastLabel();
-    btnFast.onclick = () => {
-      speedIdx = (speedIdx + 1) % SPEEDS.length;
-      speedMul = SPEEDS[speedIdx];
-      updateFastLabel();
-    };
+// 通常速度(=FAST x1)を「従来の2倍」にする
+const BASE_SPEED = 2;
 
-    // ===== Helpers =====
+const SPEEDS = [1, 2, 4, 8]; // 表示倍率
+let speedIdx = 0;
+let speedMul = SPEEDS[speedIdx];
+
+function effectiveSpeed(){ return speedMul * BASE_SPEED; }
+
+function updateFastLabel(){ btnFast.textContent = `FAST x${speedMul}`; }
+updateFastLabel();
+
+btnFast.onclick = () => {
+  speedIdx = (speedIdx + 1) % SPEEDS.length;
+  speedMul = SPEEDS[speedIdx];
+  updateFastLabel();
+};
+
+// ===== Helpers =====
     function rand(a,b){ return a + Math.random()*(b-a); }
     function clamp(x,a,b){ return Math.max(a, Math.min(b, x)); }
 
@@ -714,7 +688,7 @@
 
       if (world && (state === RaceState.RUNNING || state === RaceState.TRANSITION || state === RaceState.DONE)) {
         const simDt = 1/60;
-        const speed = (state === RaceState.RUNNING) ? speedMul : 1;
+        const speed = (state === RaceState.RUNNING) ? effectiveSpeed() : 1;
 
         if (state === RaceState.RUNNING) raceReal += dtReal;
 
