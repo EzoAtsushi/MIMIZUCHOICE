@@ -679,7 +679,9 @@ btnFast.onclick = () => {
     // ===== Loop =====
     let last = performance.now();
     function frame(now){
-      const dtReal = Math.min(0.033, (now - last) / 1000);
+      const dtRealRaw = (now - last) / 1000;
+      // フレーム落ち時でも「実時間」に追従させる（FASTが効かなく見えるのを防ぐ）
+      const dtReal = Math.min(0.10, Math.max(0, dtRealRaw));
       last = now;
 
       const W = canvas.getBoundingClientRect().width;
@@ -924,6 +926,7 @@ btnFast.onclick = () => {
         `FAST x${speedMul}`,
         `REAL ${fmt(raceReal, 1)}s`,
         `SIM  ${fmt(raceT, 1)}s`,
+        `RATE x${fmt((raceReal>0 ? (raceT/raceReal) : 0), 2)}`,
         `GOAL ${xGoal.toFixed(2)} eps ${eps.toFixed(2)}`,
         `X0 ${fmt(x0,2)}  X1 ${fmt(x1,2)}  X2 ${fmt(x2,2)}`,
         `STALL ${fmt(stallTimer, 1)}/${STALL_SEC.toFixed(0)}s`,
