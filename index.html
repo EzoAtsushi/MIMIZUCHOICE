@@ -120,8 +120,7 @@
     </div>
 
     <div class="card">
-      <div class="title">STATS</div>
-      <div class="mono" id="score">GEN: 0\nBEST: --</div>
+      <div class="mono" id="score">TIME: 0.00s\nGEN: 0\nBEST: --</div>
     </div>
 
     <div class="card">
@@ -512,7 +511,10 @@ btnFast.onclick = () => {
 
     function showStats(){
       const bestStr = isFinite(bestTime) ? formatTime(bestTime) : '--';
-      scoreEl.textContent = `GEN: ${gen}\nBEST: ${bestStr}`;
+      const timeStr = (state === RaceState.RUNNING || state === RaceState.DONE || state === RaceState.TRANSITION)
+        ? formatTime(raceT)
+        : '0.00s';
+      scoreEl.textContent = `TIME: ${timeStr}\nGEN: ${gen}\nBEST: ${bestStr}`;
     }
 
     function resetAll(){
@@ -791,6 +793,9 @@ btnFast.onclick = () => {
       } else {
         drawIdleGuide(W,H);
       }
+
+      // 毎フレーム、タイム表示を更新
+      showStats();
 
       requestAnimationFrame(frame);
     }
